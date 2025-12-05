@@ -1,0 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.accountRouter = void 0;
+const express_1 = require("express");
+const auth_rate_limit_1 = require("../middlewares/auth-rate-limit");
+const auth_middleware_1 = require("../middlewares/auth-middleware");
+const AccountControllers_1 = require("../controllers/AccountControllers");
+const accountRouter = (0, express_1.Router)();
+exports.accountRouter = accountRouter;
+const Controller = new AccountControllers_1.AccountControllers();
+accountRouter.get("/me", auth_middleware_1.authMiddleware, Controller.me);
+accountRouter.patch("/profile", auth_middleware_1.authMiddleware, Controller.updateProfile);
+accountRouter.post("/password/change", auth_middleware_1.authMiddleware, auth_rate_limit_1.authTightLimiter, Controller.changePassword);
+accountRouter.delete("/destroy", auth_middleware_1.authMiddleware, Controller.destroyAccount);

@@ -1,0 +1,273 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // URL vem do prisma.config.ts ou de env
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  phone     String   @unique
+  password  String
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  whatsappCodes WhatsappCode[]
+
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  sentRequests     PartnerRequest[] @relation("RequestSender")
+  receivedRequests PartnerRequest[] @relation("RequestReceiver")
+
+  expensesCreated Expense[]    @relation("ExpenseCreator")
+  incomesCreated  Income[]     @relation("IncomeCreator")
+  creditCards     CreditCard[]
+
+  // 👇 novo: contribuições em metas
+  goalContributions GoalContribution[]
+
+  @@index([email])
+  @@index([phone])
+}
+
+model WhatsappCode {
+  id String @id @default(uuid())
+
+  userPhone String
+  user      User   @relation(fields: [userPhone], references: [phone])
+
+  codeHash  String
+  type      String
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  attempts  Int      @default(0)
+
+  // 👇 NOVO: token opaco para amarrar o fluxo de login sem expor phone
+  challengeId String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([userPhone, type, used])
+}
+
+model Account {
+  id   String @id @default(cuid())
+  type String @default("couple")
+
+  trialEndsAt        DateTime  @default(dbgenerated("NOW() + INTERVAL '30 days'"))
+  subscriptionStatus String    @default("trial")
+  subscriptionEndsAt DateTime?
+
+  users User[]
+
+  partnerRequests PartnerRequest[]
+
+  expenses    Expense[]
+  incomes     Income[]
+  creditCards CreditCard[]
+
+  // 👇 novo: metas da conta
+  goals Goal[]
+
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  goalContributions GoalContribution[]
+}
+
+model PartnerRequest {
+  id String @id @default(cuid())
+
+  // Quem convida
+  senderId String
+  sender   User   @relation("RequestSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  // Conta que está convidando (normalmente a conta do sender)
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Para quem vai o convite
+  receiverPhone String
+  receiverId    String?
+  receiver      User?   @relation("RequestReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  status     String  @default("pending") // pending, accepted, rejected, cancelled
+  inviteCode String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([receiverPhone])
+  @@index([inviteCode])
+  @@index([accountId])
+}
+
+model Expense {
+  id String @id @default(cuid())
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("ExpenseCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  description String
+  amount      Float
+  category    String
+
+  date DateTime @default(now()) @db.Date
+
+  payer String @default("user") // user, partner
+
+  splitType     String @default("equal") // equal, proportional, custom, solo
+  userAmount    Float?
+  partnerAmount Float?
+
+  paymentMethod String      @default("money") // money, credit_card
+  creditCardId  String?
+  creditCard    CreditCard? @relation(fields: [creditCardId], references: [id], onDelete: SetNull)
+
+  installments       Int?    @default(1) // total de parcelas
+  currentInstallment Int?    @default(1) // número desta parcela
+  installmentGroupId String? // 🔑 identifica o mesmo "compra parcelada"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([createdById])
+  @@index([date])
+  @@index([category])
+  @@index([creditCardId])
+  @@index([installmentGroupId])
+}
+
+model Income {
+  id String @id @default(cuid())
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("IncomeCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  description String?
+  amount      Float
+  category    String 
+
+  date DateTime @default(now()) @db.Date
+
+  owner String @default("user")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([createdById])
+  @@index([date])
+  @@index([category])
+}
+
+enum CreditCardInstitution {
+  NUBANK
+  INTER
+  ITAU
+  BANCO_DO_BRASIL
+  BRADESCO
+  SANTANDER
+  CAIXA
+  BTG_PACTUAL
+  C6_BANK
+  PAGBANK
+  OUTROS
+}
+
+model CreditCard {
+  id String @id @default(cuid())
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  institution CreditCardInstitution
+  lastDigits  String
+  limit       Float
+  dueDay      Int
+  closingDay  Int?
+
+  owner String @default("user")
+
+  expenses Expense[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([userId])
+  @@index([owner])
+}
+
+
+model Goal {
+  id String @id @default(cuid())
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+
+  target Float
+
+  monthlyContribution Float @default(0)
+
+  deadline DateTime @db.Date
+
+  contributions GoalContribution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([deadline])
+}
+
+model GoalContribution {
+  id String @id @default(cuid())
+
+  goalId String
+  goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  amount Float
+  date   DateTime @db.Date
+
+  source String @default("user")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([goalId])
+  @@index([accountId])
+  @@index([createdById])
+  @@index([date])
+  @@index([source])
+}
