@@ -9,12 +9,12 @@ const dotenv_1 = __importDefault(require("dotenv"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const authRouter_1 = require("./routes/authRouter");
 const error_handler_1 = require("./middlewares/error-handler");
+const express_rate_limit_1 = require("./middlewares/express-rate-limit");
 const partherRouter_1 = require("./routes/partherRouter");
 const transactionsRouter_1 = require("./routes/transactionsRouter");
 const creditsCardsRouter_1 = require("./routes/creditsCardsRouter");
 const goalsRouter_1 = require("./routes/goalsRouter");
 const accountRouter_1 = require("./routes/accountRouter");
-//import { creditCardsRouter } from "./routes/creditscardsRouter";
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const allowedOrigins = [
@@ -27,7 +27,7 @@ const corsOptions = {
 app.use((0, cors_1.default)(corsOptions));
 app.use((0, cookie_parser_1.default)());
 app.use(express_1.default.json());
-//app.use(globalRateLimiter)
+app.use(express_rate_limit_1.globalRateLimiter);
 app.use("/auth", authRouter_1.authRouter);
 app.use("/parther", partherRouter_1.partherRouter);
 app.use("/transactions", transactionsRouter_1.transactionsRouter);

@@ -1,4 +1,3 @@
-// src/utils/codeGenerate.ts
 import { randomUUID } from "crypto";
 import { prisma } from "../database";
 import { HttpError } from "../errors/HttpError";

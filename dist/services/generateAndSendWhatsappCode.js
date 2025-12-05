@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateWhatsappCode = generateWhatsappCode;
-// src/utils/codeGenerate.ts
 const crypto_1 = require("crypto");
 const database_1 = require("../database");
 const HttpError_1 = require("../errors/HttpError");
