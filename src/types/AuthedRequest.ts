@@ -1,5 +1,5 @@
-import type { Request } from "express";
-
+import { Request } from "express";
 export interface AuthedRequest extends Request {
-  userId?: string;
+  userId: string;
+  cookies: Record<string, any>;
 }

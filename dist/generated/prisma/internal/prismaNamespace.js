@@ -72,12 +72,12 @@ exports.Sql = runtime.Sql;
 exports.Decimal = runtime.Decimal;
 exports.getExtensionContext = runtime.Extensions.getExtensionContext;
 /**
- * Prisma Client JS version: 7.1.0
- * Query Engine version: ab635e6b9d606fa5c8fb8b1a7f909c3c3c1c98ba
+ * Prisma Client JS version: 7.0.1
+ * Query Engine version: f09f2815f091dbba658cdcd2264306d88bb5bda6
  */
 exports.prismaVersion = {
-    client: "7.1.0",
-    engine: "ab635e6b9d606fa5c8fb8b1a7f909c3c3c1c98ba"
+    client: "7.0.1",
+    engine: "f09f2815f091dbba658cdcd2264306d88bb5bda6"
 };
 exports.NullTypes = {
     DbNull: runtime.NullTypes.DbNull,
