@@ -15,6 +15,7 @@ import { accountRouter } from "./routes/accountRouter";
 dotenv.config();
 
 const app = express();
+app.set("trust proxy", true);
 
 const allowedOrigins = (
   process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]
