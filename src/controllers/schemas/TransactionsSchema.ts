@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-
 export const GetTransactionsQuerySchema = z.object({
   month: z.string().optional(),
   year: z.string().optional(),
@@ -10,17 +9,11 @@ export const GetTransactionsQuerySchema = z.object({
 });
 
 export const CreateExpenseSchema = z.object({
-  value: z
-    .number()
-    .positive("Valor deve ser maior que zero"),
+  value: z.number().positive("Valor deve ser maior que zero"),
 
-  category: z
-    .string()
-    .min(1, "Categoria é obrigatória"),
+  category: z.string().min(1, "Categoria é obrigatória"),
 
-  description: z
-    .string()
-    .optional(),
+  description: z.string().optional(),
 
   date: z
     .string()
@@ -46,24 +39,16 @@ export const CreateExpenseSchema = z.object({
   currentInstallment: z.number().int().min(1).optional(),
 });
 
-
 export const UpdateExpenseSchema = CreateExpenseSchema.extend({
   scope: z.enum(["single", "all"]).optional(),
 });
 
-
 export const CreateIncomeSchema = z.object({
-  value: z
-    .number()
-    .positive("Valor deve ser maior que zero"),
+  value: z.number().positive("Valor deve ser maior que zero"),
 
-  category: z
-    .string()
-    .min(1, "Categoria é obrigatória"),
+  category: z.string().min(1, "Categoria é obrigatória"),
 
-  description: z
-    .string()
-    .optional(),
+  description: z.string().optional(),
 
   date: z
     .string()
