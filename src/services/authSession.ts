@@ -1,6 +1,8 @@
 import type { Response } from "express";
 import jwt from "jsonwebtoken";
 
+const isProd = process.env.NODE_ENV === "production";
+
 export function createUserSession(res: Response, userId: string) {
   const token = jwt.sign(
     { sub: userId },
@@ -10,8 +12,8 @@ export function createUserSession(res: Response, userId: string) {
 
   res.cookie("access_token", token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProd,
+    sameSite: isProd ? "lax" : "lax",
     maxAge: 60 * 60 * 1000,
     path: "/",
   });
@@ -20,10 +22,12 @@ export function createUserSession(res: Response, userId: string) {
 }
 
 export function clearUserSession(res: Response) {
+  const isProd = process.env.NODE_ENV === "production";
+
   res.clearCookie("access_token", {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProd,
+    sameSite: isProd ? "lax" : "lax",
     path: "/",
   });
 }

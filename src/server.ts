@@ -15,6 +15,7 @@ import { globalRateLimiter } from "./middlewares/express-rate-limit";
 dotenv.config();
 
 const app = express();
+app.set("trust proxy", 1); 
 
 const allowedOrigins = (
   process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]
