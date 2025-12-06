@@ -10,15 +10,9 @@ exports.GetTransactionsQuerySchema = zod_1.z.object({
     responsible: zod_1.z.enum(["todos", "voce", "parceiro"]).optional(),
 });
 exports.CreateExpenseSchema = zod_1.z.object({
-    value: zod_1.z
-        .number()
-        .positive("Valor deve ser maior que zero"),
-    category: zod_1.z
-        .string()
-        .min(1, "Categoria é obrigatória"),
-    description: zod_1.z
-        .string()
-        .optional(),
+    value: zod_1.z.number().positive("Valor deve ser maior que zero"),
+    category: zod_1.z.string().min(1, "Categoria é obrigatória"),
+    description: zod_1.z.string().optional(),
     date: zod_1.z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/, "Data deve estar no formato YYYY-MM-DD"),
@@ -39,15 +33,9 @@ exports.UpdateExpenseSchema = exports.CreateExpenseSchema.extend({
     scope: zod_1.z.enum(["single", "all"]).optional(),
 });
 exports.CreateIncomeSchema = zod_1.z.object({
-    value: zod_1.z
-        .number()
-        .positive("Valor deve ser maior que zero"),
-    category: zod_1.z
-        .string()
-        .min(1, "Categoria é obrigatória"),
-    description: zod_1.z
-        .string()
-        .optional(),
+    value: zod_1.z.number().positive("Valor deve ser maior que zero"),
+    category: zod_1.z.string().min(1, "Categoria é obrigatória"),
+    description: zod_1.z.string().optional(),
     date: zod_1.z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/, "Data deve estar no formato YYYY-MM-DD"),

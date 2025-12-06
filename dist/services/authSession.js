@@ -6,22 +6,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createUserSession = createUserSession;
 exports.clearUserSession = clearUserSession;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const isProd = process.env.NODE_ENV === "production";
+const baseCookieOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax",
+    path: "/",
+    domain: isProd ? ".nossobolso.app" : undefined,
+};
 function createUserSession(res, userId) {
     const token = jsonwebtoken_1.default.sign({ sub: userId }, process.env.JWT_SECRET, { expiresIn: "60m" });
     res.cookie("access_token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
+        ...baseCookieOptions,
         maxAge: 60 * 60 * 1000,
-        path: "/",
     });
     return token;
 }
 function clearUserSession(res) {
     res.clearCookie("access_token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
+        ...baseCookieOptions,
     });
 }

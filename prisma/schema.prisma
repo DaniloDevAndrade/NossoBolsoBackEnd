@@ -133,10 +133,19 @@ model Expense {
 
   installments       Int?
   currentInstallment Int?
-  installment        String?
+  installment        String?   // ex: "2/12"
+
+  installmentGroupId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([createdById])
+  @@index([date])
+  @@index([category])
+  @@index([cardId])
+  @@index([installmentGroupId])
 }
 
 model Income {

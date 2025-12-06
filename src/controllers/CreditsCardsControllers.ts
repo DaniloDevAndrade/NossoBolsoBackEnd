@@ -78,7 +78,7 @@ export class CreditCardsController {
         include: {
           expenses: {
             where: {
-              paymentMethod: "credit_card",
+              paymentMethod: "card", // 👈 bate com TransactionsController/schema
             },
           },
         },
@@ -147,7 +147,7 @@ export class CreditCardsController {
         include: {
           expenses: {
             where: {
-              paymentMethod: "credit_card",
+              paymentMethod: "card", // 👈 aqui também
             },
           },
         },
@@ -180,7 +180,7 @@ export class CreditCardsController {
         const groupExpenses = await prisma.expense.findMany({
           where: {
             accountId,
-            creditCardId: card.id,
+            cardId: card.id, // 👈 schema usa cardId, não creditCardId
             installmentGroupId: { in: groupIds },
           },
         });
@@ -188,7 +188,7 @@ export class CreditCardsController {
         for (const e of groupExpenses) {
           if (!e.installmentGroupId) continue;
           const prev = totalsByGroup.get(e.installmentGroupId) ?? 0;
-          totalsByGroup.set(e.installmentGroupId, prev + (e.amount ?? 0));
+          totalsByGroup.set(e.installmentGroupId, prev + (e.value ?? 0)); // 👈 value, não amount
         }
       }
 
@@ -225,7 +225,7 @@ export class CreditCardsController {
                   ? expense.installments
                   : 1;
               totalValue = Number(
-                (expense.amount * totalInstallments).toFixed(2)
+                (expense.value * totalInstallments).toFixed(2) // 👈 value
               );
             }
           } else {
@@ -234,7 +234,7 @@ export class CreditCardsController {
                 ? expense.installments
                 : 1;
             totalValue = Number(
-              (expense.amount * totalInstallments).toFixed(2)
+              (expense.value * totalInstallments).toFixed(2) // 👈 value
             );
           }
 
@@ -242,8 +242,8 @@ export class CreditCardsController {
             id: expense.id,
             description: expense.description,
             category: expense.category,
-            value: expense.amount, // valor da PARCELA
-            date: dateStr,         // data REAL da compra
+            value: expense.value, // 👈 valor da PARCELA (value)
+            date: dateStr,        // data REAL da compra
             installment,
             installmentGroupId: expense.installmentGroupId ?? null,
             totalValue,
@@ -304,7 +304,7 @@ export class CreditCardsController {
         include: {
           expenses: {
             where: {
-              paymentMethod: "credit_card",
+              paymentMethod: "card", // 👈 ajustado
             },
           },
         },
@@ -406,7 +406,7 @@ export class CreditCardsController {
         include: {
           expenses: {
             where: {
-              paymentMethod: "credit_card",
+              paymentMethod: "card", // 👈 ajustado
             },
           },
         },
@@ -459,7 +459,7 @@ export class CreditCardsController {
       }
 
       const hasExpenses = await prisma.expense.count({
-        where: { creditCardId: existing.id },
+        where: { cardId: existing.id }, // 👈 cardId, não creditCardId
       });
 
       if (hasExpenses > 0) {
@@ -512,7 +512,7 @@ export class CreditCardsController {
   private mapCardToDTO(card: any, currentUserId: string): CreditCardDTO {
     const used = Array.isArray(card.expenses)
       ? card.expenses.reduce(
-          (sum: number, exp: any) => sum + (exp.amount ?? 0),
+          (sum: number, exp: any) => sum + (exp.value ?? 0), // 👈 value, não amount
           0
         )
       : 0;

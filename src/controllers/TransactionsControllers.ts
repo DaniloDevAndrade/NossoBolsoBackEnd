@@ -411,181 +411,306 @@ export class TransactionsController {
   };
 
   updateExpense = async (
-    req: AuthedRequest,
-    res: Response,
-    next: NextFunction
-  ) => {
-    try {
-      const userId = req.userId;
-      if (!userId) throw new HttpError(401, "Usuário não autenticado");
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.userId;
+    if (!userId) throw new HttpError(401, "Usuário não autenticado");
 
-      const { id } = req.params;
+    const { id } = req.params;
 
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        include: {
-          account: {
-            include: {
-              users: true,
-            },
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        account: {
+          include: {
+            users: true,
           },
         },
-      });
+      },
+    });
 
-      if (!user || !user.accountId || !user.account) {
+    if (!user || !user.accountId || !user.account) {
+      throw new HttpError(
+        400,
+        "Usuário não possui conta financeira configurada."
+      );
+    }
+
+    const accountId = user.accountId;
+    const partner = user.account.users.find((u) => u.id !== userId) || null;
+    const partnerId = partner?.id || null;
+
+    const existing = await prisma.expense.findFirst({
+      where: {
+        id,
+        accountId,
+      },
+      include: {
+        card: true,
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Despesa não encontrada." });
+    }
+
+    const parsed = UpdateExpenseSchema.parse(req.body);
+
+    const {
+      value,
+      category,
+      description,
+      date,
+      paidBy,
+      splitType,
+      customSplit,
+      paymentMethod,
+      creditCardId,
+      installments,
+      currentInstallment,
+    } = parsed as any;
+
+    const scope: "single" | "all" =
+      (parsed as any).scope === "all" ? "all" : "single";
+
+    const safeDescription = description?.trim() ?? "";
+    const parsedDate = parseDateStringToUTC(date);
+
+    const paidByCode = paidBy === "parceiro" ? "partner" : "you";
+
+    let responsibleUserId: string | null = null;
+    if (paidByCode === "you") {
+      responsibleUserId = userId;
+    } else if (paidByCode === "partner" && partnerId) {
+      responsibleUserId = partnerId;
+    } else {
+      responsibleUserId = userId;
+    }
+
+    // cálculo de divisão (por parcela)
+    let youPay: number | null = null;
+    let partnerPays: number | null = null;
+
+    if (splitType === "50-50") {
+      const half = Number((value / 2).toFixed(2));
+      youPay = half;
+      partnerPays = Number((value - half).toFixed(2));
+    } else if (splitType === "proporcional") {
+      const proportional = await this.calculateProportionalSplit(
+        accountId,
+        parsedDate,
+        value
+      );
+      youPay = proportional.youPay;
+      partnerPays = proportional.partnerPays;
+    } else if (splitType === "customizada") {
+      const userPercent = customSplit?.you ?? 50;
+      const youVal = Number(((value * userPercent) / 100).toFixed(2));
+      youPay = youVal;
+      partnerPays = Number((value - youVal).toFixed(2));
+    }
+
+    const dbPaymentMethod = paymentMethod === "cartao" ? "card" : "cash";
+
+    let cardId: string | null = null;
+
+    if (dbPaymentMethod === "card") {
+      if (!creditCardId) {
         throw new HttpError(
           400,
-          "Usuário não possui conta financeira configurada."
+          "Selecione um cartão para pagamento no crédito."
         );
       }
 
-      const accountId = user.accountId;
-      const partner = user.account.users.find((u) => u.id !== userId) || null;
-      const partnerId = partner?.id || null;
-
-      const existing = await prisma.expense.findFirst({
+      const card = await prisma.creditCard.findFirst({
         where: {
-          id,
+          id: creditCardId,
           accountId,
-        },
-        include: {
-          card: true,
         },
       });
 
-      if (!existing) {
-        return res.status(404).json({ message: "Despesa não encontrada." });
+      if (!card) {
+        throw new HttpError(400, "Cartão inválido para esta conta.");
       }
 
-      const parsed = UpdateExpenseSchema.parse(req.body);
+      cardId = card.id;
+    }
 
-      const {
-        value,
-        category,
-        description,
-        date,
-        paidBy,
-        splitType,
-        customSplit,
-        paymentMethod,
-        creditCardId,
-        installments,
-        currentInstallment,
-      } = parsed;
+    const originalInstallments = existing.installments ?? 1;
 
-      const safeDescription = description?.trim() ?? "";
-      const parsedDate = parseDateStringToUTC(date);
+    const totalInstallments =
+      typeof installments === "number" && installments > 0
+        ? installments
+        : originalInstallments;
 
-      const paidByCode = paidBy === "parceiro" ? "partner" : "you";
+    const currentInst =
+      typeof currentInstallment === "number" && currentInstallment >= 1
+        ? currentInstallment
+        : existing.currentInstallment ?? 1;
 
-      let responsibleUserId: string | null = null;
-      if (paidByCode === "you") {
-        responsibleUserId = userId;
-      } else if (paidByCode === "partner" && partnerId) {
-        responsibleUserId = partnerId;
-      } else {
-        responsibleUserId = userId;
-      }
+    if (currentInst > totalInstallments) {
+      throw new HttpError(
+        400,
+        "Parcela atual não pode ser maior que o número total de parcelas."
+      );
+    }
 
-      let youPay: number | null = null;
-      let partnerPays: number | null = null;
+    const isParcelledExisting =
+      existing.paymentMethod === "card" && originalInstallments > 1;
 
-      if (splitType === "50-50") {
-        const half = Number((value / 2).toFixed(2));
-        youPay = half;
-        partnerPays = Number((value - half).toFixed(2));
-      } else if (splitType === "proporcional") {
-        const proportional = await this.calculateProportionalSplit(
-          accountId,
-          parsedDate,
-          value
+    /**
+     * 🔥 CASO 1: scope === "all" e despesa parcelada no cartão
+     * Atualiza TODAS as parcelas desta compra.
+     */
+    if (scope === "all" && isParcelledExisting) {
+      // Não deixo mudar o número de parcelas aqui (simplifica MUITO).
+      if (
+        typeof installments === "number" &&
+        installments !== originalInstallments
+      ) {
+        throw new HttpError(
+          400,
+          "Não é possível alterar o número total de parcelas de uma compra já parcelada. " +
+            "Edite apenas os dados/valor ou crie uma nova despesa."
         );
-        youPay = proportional.youPay;
-        partnerPays = proportional.partnerPays;
-      } else if (splitType === "customizada") {
-        const userPercent = customSplit?.you ?? 50;
-        const youVal = Number(((value * userPercent) / 100).toFixed(2));
-        youPay = youVal;
-        partnerPays = Number((value - youVal).toFixed(2));
       }
 
-      const dbPaymentMethod =
-        paymentMethod === "cartao" ? "card" : "cash";
+      // Busca TODAS as parcelas que, muito provavelmente, são da mesma compra
+      const siblings = await prisma.expense.findMany({
+        where: {
+          accountId,
+          paymentMethod: "card",
+          cardId: existing.cardId,
+          installments: originalInstallments,
+          description: existing.description,
+          category: existing.category,
+        },
+        orderBy: {
+          date: "asc",
+        },
+      });
 
-      let cardId: string | null = null;
-
-      if (dbPaymentMethod === "card") {
-        if (!creditCardId) {
-          throw new HttpError(
-            400,
-            "Selecione um cartão para pagamento no crédito."
-          );
-        }
-
-        const card = await prisma.creditCard.findFirst({
-          where: {
-            id: creditCardId,
+      if (siblings.length === 0) {
+        // fallback: se por algum motivo não achar, faz update normal na atual
+        const updated = await prisma.expense.update({
+          where: { id: existing.id },
+          data: {
+            description: safeDescription,
+            category,
+            value,
+            date: parsedDate,
             accountId,
+            createdById: existing.createdById,
+            responsibleUserId,
+            paidBy: paidByCode,
+            youPay,
+            partnerPays,
+            paymentMethod: dbPaymentMethod,
+            cardId,
+            installments: totalInstallments,
+            currentInstallment: currentInst,
+            installment:
+              totalInstallments > 1
+                ? `${currentInst}/${totalInstallments}`
+                : null,
+          },
+          include: {
+            card: true,
           },
         });
 
-        if (!card) {
-          throw new HttpError(400, "Cartão inválido para esta conta.");
-        }
-
-        cardId = card.id;
+        return res.json({
+          message:
+            "Despesa atualizada, porém não foi possível identificar todas as parcelas.",
+          transaction: this.mapExpenseToDTO(updated, userId),
+        });
       }
 
-      const totalInstallments =
-        typeof installments === "number" && installments > 0
-          ? installments
-          : existing.installments ?? 1;
+      // Atualiza todas as parcelas encontradas
+      await prisma.$transaction(
+        siblings.map((sibling) =>
+          prisma.expense.update({
+            where: { id: sibling.id },
+            data: {
+              description: safeDescription,
+              category,
+              // aqui assumimos que 'value' é o valor da PARCELA (como no modal)
+              value,
+              // mantemos a data original de cada parcela (não mexemos no ciclo da fatura)
+              date: sibling.date,
+              accountId,
+              createdById: sibling.createdById,
+              responsibleUserId,
+              paidBy: paidByCode,
+              youPay,
+              partnerPays,
+              paymentMethod: dbPaymentMethod,
+              cardId,
+              installments: originalInstallments,
+              currentInstallment: sibling.currentInstallment,
+              installment:
+                originalInstallments > 1 && sibling.currentInstallment
+                  ? `${sibling.currentInstallment}/${originalInstallments}`
+                  : null,
+            },
+          })
+        )
+      );
 
-      const currentInst =
-        typeof currentInstallment === "number" && currentInstallment >= 1
-          ? currentInstallment
-          : existing.currentInstallment ?? 1;
-
-      if (currentInst > totalInstallments) {
-        throw new HttpError(
-          400,
-          "Parcela atual não pode ser maior que o número total de parcelas."
-        );
-      }
-
-      const updated = await prisma.expense.update({
+      const updatedCurrent = await prisma.expense.findUnique({
         where: { id: existing.id },
-        data: {
-          description: safeDescription,
-          category,
-          value,
-          date: parsedDate,
-          accountId,
-          createdById: existing.createdById,
-          responsibleUserId,
-          paidBy: paidByCode,
-          youPay,
-          partnerPays,
-          paymentMethod: dbPaymentMethod,
-          cardId,
-          installments: totalInstallments,
-          currentInstallment: currentInst,
-          installment:
-            totalInstallments > 1 ? `${currentInst}/${totalInstallments}` : null,
-        },
-        include: {
-          card: true,
-        },
+        include: { card: true },
       });
 
       return res.json({
-        message: "Despesa atualizada com sucesso.",
-        transaction: this.mapExpenseToDTO(updated, userId),
+        message: "Todas as parcelas dessa compra foram atualizadas.",
+        transaction: updatedCurrent
+          ? this.mapExpenseToDTO(updatedCurrent, userId)
+          : undefined,
       });
-    } catch (err) {
-      next(err);
     }
-  };
+
+    /**
+     * CASO 2: scope === "single" ou não é despesa parcelada no cartão
+     * Comportamento original: atualiza só este registro.
+     */
+    const updated = await prisma.expense.update({
+      where: { id: existing.id },
+      data: {
+        description: safeDescription,
+        category,
+        value,
+        date: parsedDate,
+        accountId,
+        createdById: existing.createdById,
+        responsibleUserId,
+        paidBy: paidByCode,
+        youPay,
+        partnerPays,
+        paymentMethod: dbPaymentMethod,
+        cardId,
+        installments: totalInstallments,
+        currentInstallment: currentInst,
+        installment:
+          totalInstallments > 1 ? `${currentInst}/${totalInstallments}` : null,
+      },
+      include: {
+        card: true,
+      },
+    });
+
+    return res.json({
+      message: "Despesa atualizada com sucesso.",
+      transaction: this.mapExpenseToDTO(updated, userId),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 
   deleteExpense = async (
     req: AuthedRequest,
