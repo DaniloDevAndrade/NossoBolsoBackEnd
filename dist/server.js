@@ -9,15 +9,18 @@ const dotenv_1 = __importDefault(require("dotenv"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const authRouter_1 = require("./routes/authRouter");
 const error_handler_1 = require("./middlewares/error-handler");
-const express_rate_limit_1 = require("./middlewares/express-rate-limit");
 const partherRouter_1 = require("./routes/partherRouter");
 const transactionsRouter_1 = require("./routes/transactionsRouter");
 const creditsCardsRouter_1 = require("./routes/creditsCardsRouter");
 const goalsRouter_1 = require("./routes/goalsRouter");
 const accountRouter_1 = require("./routes/accountRouter");
+const express_rate_limit_1 = require("./middlewares/express-rate-limit");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
-const allowedOrigins = (process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]).map(origin => origin.trim());
+if (process.env.NODE_ENV === "production") {
+    app.set("trust proxy", "loopback");
+}
+const allowedOrigins = (process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]).map((origin) => origin.trim());
 const corsOptions = {
     origin: (origin, callback) => {
         if (!origin)

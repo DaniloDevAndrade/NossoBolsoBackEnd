@@ -5,21 +5,24 @@ import cookieParser from "cookie-parser";
 
 import { authRouter } from "./routes/authRouter";
 import { errorHandlerMiddleware } from "./middlewares/error-handler";
-import { globalRateLimiter } from "./middlewares/express-rate-limit";
 import { partherRouter } from "./routes/partherRouter";
 import { transactionsRouter } from "./routes/transactionsRouter";
 import { creditCardsRouter } from "./routes/creditsCardsRouter";
 import { goalsRouter } from "./routes/goalsRouter";
 import { accountRouter } from "./routes/accountRouter";
+import { globalRateLimiter } from "./middlewares/express-rate-limit";
 
 dotenv.config();
 
 const app = express();
-app.set("trust proxy", true);
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", "loopback");
+}
 
 const allowedOrigins = (
   process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]
-).map(origin => origin.trim());
+).map((origin) => origin.trim());
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
