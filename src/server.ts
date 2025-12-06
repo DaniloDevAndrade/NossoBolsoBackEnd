@@ -16,10 +16,6 @@ dotenv.config();
 
 const app = express();
 
-if (process.env.NODE_ENV === "production") {
-  app.set("trust proxy", "loopback");
-}
-
 const allowedOrigins = (
   process.env.CORS_ORIGINS?.split(",") ?? ["http://localhost:3000"]
 ).map((origin) => origin.trim());
