@@ -63,6 +63,6 @@ __exportStar(require("./enums"), exports);
  * const users = await prisma.user.findMany()
  * ```
  *
- * Read more in our [docs](https://www.prisma.io/docs/reference/tools-and-interfaces/prisma-client).
+ * Read more in our [docs](https://pris.ly/d/client).
  */
 exports.PrismaClient = $Class.getPrismaClientClass();
