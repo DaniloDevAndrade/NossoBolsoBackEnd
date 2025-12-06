@@ -12,8 +12,8 @@ export function createUserSession(res: Response, userId: string) {
 
   res.cookie("access_token", token, {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "lax" : "lax",
+    secure: true,
+    sameSite: "none",
     maxAge: 60 * 60 * 1000,
     path: "/",
   });
