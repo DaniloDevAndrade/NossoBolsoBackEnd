@@ -4,12 +4,13 @@
     "module": "commonjs",
     "rootDir": "src",
     "outDir": "dist",
+
     "strict": false,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
-    "moduleResolution": "node",
-    "types": ["node", "express"]
+
+    "moduleResolution": "node"
   },
   "include": ["src"]
 }
