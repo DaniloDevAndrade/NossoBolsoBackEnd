@@ -1,5 +1,3 @@
-// prisma/schema.prisma
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -7,7 +5,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // URL vem do prisma.config.ts ou de env
 }
 
 model User {
@@ -28,11 +25,13 @@ model User {
   sentRequests     PartnerRequest[] @relation("RequestSender")
   receivedRequests PartnerRequest[] @relation("RequestReceiver")
 
-  expensesCreated Expense[]    @relation("ExpenseCreator")
-  incomesCreated  Income[]     @relation("IncomeCreator")
-  creditCards     CreditCard[]
+  expensesCreated Expense[] @relation("ExpenseCreator")
+  incomesCreated  Income[]  @relation("IncomeCreator")
 
-  // 👇 novo: contribuições em metas
+  expensesResponsible Expense[] @relation("ExpenseResponsible")
+  incomesResponsible  Income[]  @relation("IncomeResponsible")
+
+  creditCards       CreditCard[]
   goalContributions GoalContribution[]
 
   @@index([email])
@@ -51,7 +50,6 @@ model WhatsappCode {
   expiresAt DateTime
   attempts  Int      @default(0)
 
-  // 👇 NOVO: token opaco para amarrar o fluxo de login sem expor phone
   challengeId String? @unique
 
   createdAt DateTime @default(now())
@@ -67,17 +65,14 @@ model Account {
   subscriptionStatus String    @default("trial")
   subscriptionEndsAt DateTime?
 
-  users User[]
-
+  users           User[]
   partnerRequests PartnerRequest[]
 
   expenses    Expense[]
   incomes     Income[]
   creditCards CreditCard[]
 
-  // 👇 novo: metas da conta
-  goals Goal[]
-
+  goals             Goal[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   goalContributions GoalContribution[]
@@ -86,20 +81,17 @@ model Account {
 model PartnerRequest {
   id String @id @default(cuid())
 
-  // Quem convida
   senderId String
   sender   User   @relation("RequestSender", fields: [senderId], references: [id], onDelete: Cascade)
 
-  // Conta que está convidando (normalmente a conta do sender)
   accountId String?
   account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  // Para quem vai o convite
   receiverPhone String
   receiverId    String?
   receiver      User?   @relation("RequestReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
 
-  status     String  @default("pending") // pending, accepted, rejected, cancelled
+  status     String  @default("pending")
   inviteCode String? @unique
 
   createdAt DateTime @default(now())
@@ -116,66 +108,59 @@ model Expense {
   id String @id @default(cuid())
 
   accountId String
-  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account   Account @relation(fields: [accountId], references: [id])
 
   createdById String
-  createdBy   User   @relation("ExpenseCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy   User   @relation("ExpenseCreator", fields: [createdById], references: [id])
+
+  responsibleUserId String?
+  responsibleUser   User?   @relation("ExpenseResponsible", fields: [responsibleUserId], references: [id])
 
   description String
-  amount      Float
   category    String
+  value       Float
+  date        DateTime @db.Date
 
-  date DateTime @default(now()) @db.Date
+  paidBy String?
 
-  payer String @default("user") // user, partner
+  youPay      Float?
+  partnerPays Float?
 
-  splitType     String @default("equal") // equal, proportional, custom, solo
-  userAmount    Float?
-  partnerAmount Float?
+  paymentMethod String
 
-  paymentMethod String      @default("money") // money, credit_card
-  creditCardId  String?
-  creditCard    CreditCard? @relation(fields: [creditCardId], references: [id], onDelete: SetNull)
+  cardId String?
+  card   CreditCard? @relation(fields: [cardId], references: [id])
 
-  installments       Int?    @default(1) // total de parcelas
-  currentInstallment Int?    @default(1) // número desta parcela
-  installmentGroupId String? // 🔑 identifica o mesmo "compra parcelada"
+  installments       Int?
+  currentInstallment Int?
+  installment        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  @@index([accountId])
-  @@index([createdById])
-  @@index([date])
-  @@index([category])
-  @@index([creditCardId])
-  @@index([installmentGroupId])
 }
 
 model Income {
-  id String @id @default(cuid())
-
+  id        String  @id @default(cuid())
   accountId String
-  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account   Account @relation(fields: [accountId], references: [id])
 
   createdById String
-  createdBy   User   @relation("IncomeCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy   User   @relation("IncomeCreator", fields: [createdById], references: [id])
 
-  description String?
-  amount      Float
-  category    String 
+  responsibleUserId String?
+  responsibleUser   User?   @relation("IncomeResponsible", fields: [responsibleUserId], references: [id])
 
-  date DateTime @default(now()) @db.Date
+  description String
+  category    String
+  value       Float
+  date        DateTime @db.Date
 
-  owner String @default("user")
+  receivedBy     String?
+  youReceive     Float?
+  partnerReceive Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  @@index([accountId])
-  @@index([createdById])
-  @@index([date])
-  @@index([category])
 }
 
 enum CreditCardInstitution {
@@ -219,7 +204,6 @@ model CreditCard {
   @@index([userId])
   @@index([owner])
 }
-
 
 model Goal {
   id String @id @default(cuid())

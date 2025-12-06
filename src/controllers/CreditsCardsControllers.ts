@@ -40,7 +40,7 @@ type CardExpenseDTO = {
 
 export class CreditCardsController {
   // GET /credit-cards
-  // Lista cartões da conta do usuário + total usado no mês/ano (fatura do mês).
+  // Lista cartões da conta do usuário + total usado na FATURA do mês/ano (considerando closingDay).
   getCreditCards = async (
     req: AuthedRequest,
     res: Response,
@@ -70,10 +70,7 @@ export class CreditCardsController {
       const month = monthParam ? Number(monthParam) : now.getMonth() + 1;
       const year = yearParam ? Number(yearParam) : now.getFullYear();
 
-      // Datas em UTC pra não dar drift
-      const startDate = new Date(Date.UTC(year, month - 1, 1));
-      const endDate = new Date(Date.UTC(year, month, 1));
-
+      // 👉 busca TODAS as despesas de cartão, depois filtra por fatura (billing month/year)
       const cards = await prisma.creditCard.findMany({
         where: {
           accountId,
@@ -82,18 +79,26 @@ export class CreditCardsController {
           expenses: {
             where: {
               paymentMethod: "credit_card",
-              date: {
-                gte: startDate,
-                lt: endDate,
-              },
             },
           },
         },
       });
 
-      const cardsDTO: CreditCardDTO[] = cards.map((card) =>
-        this.mapCardToDTO(card, user.id)
-      );
+      const cardsDTO: CreditCardDTO[] = cards.map((card) => {
+        // despesas que pertencem à FATURA (month/year) considerando closingDay
+        const expensesOfInvoice = card.expenses.filter((exp) => {
+          const { year: billYear, month: billMonth } =
+            this.getBillingYearMonth(exp.date, card.closingDay);
+          return billYear === year && billMonth === month;
+        });
+
+        const cardForDTO = {
+          ...card,
+          expenses: expensesOfInvoice,
+        };
+
+        return this.mapCardToDTO(cardForDTO, user.id);
+      });
 
       return res.json({ cards: cardsDTO });
     } catch (err) {
@@ -102,7 +107,7 @@ export class CreditCardsController {
   };
 
   // GET /credit-cards/:id
-  // Detalhe do cartão + despesas desse cartão no mês/ano.
+  // Detalhe do cartão + despesas desse cartão na FATURA do mês/ano (considerando closingDay).
   getCreditCardDetails = async (
     req: AuthedRequest,
     res: Response,
@@ -133,10 +138,7 @@ export class CreditCardsController {
       const month = monthParam ? Number(monthParam) : now.getMonth() + 1;
       const year = yearParam ? Number(yearParam) : now.getFullYear();
 
-      const startDate = new Date(Date.UTC(year, month - 1, 1));
-      const endDate = new Date(Date.UTC(year, month, 1));
-
-      // 1) Pega as despesas DESSE MÊS para mostrar na tabela + used
+      // 👉 pega TODAS as despesas de cartão e depois filtra pela fatura
       const card = await prisma.creditCard.findFirst({
         where: {
           id,
@@ -146,10 +148,6 @@ export class CreditCardsController {
           expenses: {
             where: {
               paymentMethod: "credit_card",
-              date: {
-                gte: startDate,
-                lt: endDate,
-              },
             },
           },
         },
@@ -159,10 +157,17 @@ export class CreditCardsController {
         throw new HttpError(404, "Cartão não encontrado.");
       }
 
-      // 2) Descobre os grupos de parcelas presentes neste mês
+      // despesas dessa fatura (month/year) considerando closingDay
+      const expensesOfInvoice = card.expenses.filter((expense) => {
+        const { year: billYear, month: billMonth } =
+          this.getBillingYearMonth(expense.date, card.closingDay);
+        return billYear === year && billMonth === month;
+      });
+
+      // 2) Descobre os grupos de parcelas PRESENTES nesta fatura
       const groupIds = Array.from(
         new Set(
-          card.expenses
+          expensesOfInvoice
             .map((e) => e.installmentGroupId)
             .filter((v): v is string => !!v)
         )
@@ -187,11 +192,14 @@ export class CreditCardsController {
         }
       }
 
-      // 4) DTO do cartão (used = só mês filtrado)
-      const cardDTO = this.mapCardToDTO(card, user.id);
+      // 4) DTO do cartão (used = só fatura filtrada)
+      const cardDTO = this.mapCardToDTO(
+        { ...card, expenses: expensesOfInvoice },
+        user.id
+      );
 
-      // 5) Mapeia as despesas do mês com total REAL da compra
-      const expensesDTO: CardExpenseDTO[] = card.expenses
+      // 5) Mapeia as despesas da FATURA com total REAL da compra
+      const expensesDTO: CardExpenseDTO[] = expensesOfInvoice
         .sort((a, b) => a.date.getTime() - b.date.getTime())
         .map((expense) => {
           const dateStr = expense.date.toISOString().split("T")[0];
@@ -212,7 +220,6 @@ export class CreditCardsController {
             if (typeof totalFromMap === "number") {
               totalValue = Number(totalFromMap.toFixed(2));
             } else {
-              // fallback: valor parcela * número de parcelas
               const totalInstallments =
                 expense.installments && expense.installments > 0
                   ? expense.installments
@@ -222,7 +229,6 @@ export class CreditCardsController {
               );
             }
           } else {
-            // compra à vista ou sem grupo
             const totalInstallments =
               expense.installments && expense.installments > 0
                 ? expense.installments
@@ -237,7 +243,7 @@ export class CreditCardsController {
             description: expense.description,
             category: expense.category,
             value: expense.amount, // valor da PARCELA
-            date: dateStr,
+            date: dateStr,         // data REAL da compra
             installment,
             installmentGroupId: expense.installmentGroupId ?? null,
             totalValue,
@@ -527,5 +533,30 @@ export class CreditCardsController {
       userId: card.userId,
       isCurrentUserOwner,
     };
+  }
+  
+  private getBillingYearMonth(
+    date: Date,
+    closingDay?: number | null
+  ): { year: number; month: number } {
+    let year = date.getUTCFullYear();
+    let month = date.getUTCMonth() + 1; // 1..12
+    const day = date.getUTCDate();
+
+    if (
+      typeof closingDay === "number" &&
+      closingDay >= 1 &&
+      closingDay <= 31
+    ) {
+      if (day > closingDay) {
+        month += 1;
+        if (month === 13) {
+          month = 1;
+          year += 1;
+        }
+      }
+    }
+
+    return { year, month };
   }
 }
