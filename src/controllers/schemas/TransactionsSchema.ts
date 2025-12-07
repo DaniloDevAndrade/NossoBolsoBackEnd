@@ -1,8 +1,38 @@
 import { z } from "zod";
 
+const MonthSchema = z.preprocess(
+  (v) => {
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isNaN(n) ? v : n;
+    }
+    return v;
+  },
+  z
+    .number()
+    .int()
+    .min(1, "Mês deve ser entre 1 e 12")
+    .max(12, "Mês deve ser entre 1 e 12")
+);
+
+const YearSchema = z.preprocess(
+  (v) => {
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isNaN(n) ? v : n;
+    }
+    return v;
+  },
+  z
+    .number()
+    .int()
+    .min(1900, "Ano inválido")
+    .max(2100, "Ano inválido")
+);
+
 export const GetTransactionsQuerySchema = z.object({
-  month: z.string().optional(),
-  year: z.string().optional(),
+  month: MonthSchema.optional(), // number | undefined
+  year: YearSchema.optional(),   // number | undefined
   type: z.enum(["todas", "income", "expense"]).optional(),
   category: z.string().optional(),
   responsible: z.enum(["todos", "voce", "parceiro"]).optional(),
