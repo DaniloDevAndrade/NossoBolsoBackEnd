@@ -2,9 +2,31 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UpdateIncomeSchema = exports.CreateIncomeSchema = exports.UpdateExpenseSchema = exports.CreateExpenseSchema = exports.GetTransactionsQuerySchema = void 0;
 const zod_1 = require("zod");
+const MonthSchema = zod_1.z.preprocess((v) => {
+    if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isNaN(n) ? v : n;
+    }
+    return v;
+}, zod_1.z
+    .number()
+    .int()
+    .min(1, "Mês deve ser entre 1 e 12")
+    .max(12, "Mês deve ser entre 1 e 12"));
+const YearSchema = zod_1.z.preprocess((v) => {
+    if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isNaN(n) ? v : n;
+    }
+    return v;
+}, zod_1.z
+    .number()
+    .int()
+    .min(1900, "Ano inválido")
+    .max(2100, "Ano inválido"));
 exports.GetTransactionsQuerySchema = zod_1.z.object({
-    month: zod_1.z.string().optional(),
-    year: zod_1.z.string().optional(),
+    month: MonthSchema.optional(), // number | undefined
+    year: YearSchema.optional(), // number | undefined
     type: zod_1.z.enum(["todas", "income", "expense"]).optional(),
     category: zod_1.z.string().optional(),
     responsible: zod_1.z.enum(["todos", "voce", "parceiro"]).optional(),

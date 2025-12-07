@@ -53,12 +53,6 @@ const getFirstInvoiceDate = (
 ): Date => {
   const purchaseDay = purchaseDate.getUTCDate();
 
-  // dia da fatura: se tiver dueDay usa ele, senão usa o dia da compra
-  const invoiceDay =
-    typeof dueDay === "number" && dueDay >= 1 && dueDay <= 31
-      ? dueDay
-      : purchaseDay;
-
   let year = purchaseDate.getUTCFullYear();
   let month0 = purchaseDate.getUTCMonth(); // 0..11
 
@@ -68,7 +62,6 @@ const getFirstInvoiceDate = (
     closingDay <= 31 &&
     purchaseDay >= closingDay
   ) {
-    // compra entrou APÓS (ou no) fechamento -> fatura começa no próximo mês
     month0 += 1;
     if (month0 >= 12) {
       month0 = 0;
@@ -76,7 +69,7 @@ const getFirstInvoiceDate = (
     }
   }
 
-  const day = clampDayToMonth(year, month0, invoiceDay);
+  const day = clampDayToMonth(year, month0, purchaseDay);
   return new Date(Date.UTC(year, month0, day));
 };
 

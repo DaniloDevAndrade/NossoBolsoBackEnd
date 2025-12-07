@@ -1,20 +1,58 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TransactionsController = void 0;
+const crypto_1 = require("crypto");
 const database_1 = require("../database");
 const HttpError_1 = require("../errors/HttpError");
 const TransactionsSchema_1 = require("./schemas/TransactionsSchema");
-const normalizeCategory = (category) => {
-    if (!category || category === "todas")
-        return undefined;
-    return category;
-};
 const parseDateStringToUTC = (dateStr) => {
     const [y, m, d] = dateStr.split("-").map(Number);
     return new Date(Date.UTC(y, m - 1, d));
 };
+const clampDayToMonth = (year, month0, day) => {
+    // month0 = 0..11
+    const lastDay = new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+    return Math.min(day, lastDay);
+};
+const getFirstInvoiceDate = (purchaseDate, closingDay, dueDay) => {
+    const purchaseDay = purchaseDate.getUTCDate();
+    // dia da fatura: se tiver dueDay usa ele, senão usa o dia da compra
+    const invoiceDay = typeof dueDay === "number" && dueDay >= 1 && dueDay <= 31
+        ? dueDay
+        : purchaseDay;
+    let year = purchaseDate.getUTCFullYear();
+    let month0 = purchaseDate.getUTCMonth(); // 0..11
+    if (typeof closingDay === "number" &&
+        closingDay >= 1 &&
+        closingDay <= 31 &&
+        purchaseDay >= closingDay) {
+        // compra entrou APÓS (ou no) fechamento -> fatura começa no próximo mês
+        month0 += 1;
+        if (month0 >= 12) {
+            month0 = 0;
+            year += 1;
+        }
+    }
+    const day = clampDayToMonth(year, month0, invoiceDay);
+    return new Date(Date.UTC(year, month0, day));
+};
+const addMonthsKeepingDay = (baseDate, monthsToAdd) => {
+    const baseYear = baseDate.getUTCFullYear();
+    const baseMonth0 = baseDate.getUTCMonth();
+    const baseDay = baseDate.getUTCDate();
+    const totalMonths = baseMonth0 + monthsToAdd;
+    const newYear = baseYear + Math.floor(totalMonths / 12);
+    const newMonth0 = ((totalMonths % 12) + 12) % 12;
+    const day = clampDayToMonth(newYear, newMonth0, baseDay);
+    return new Date(Date.UTC(newYear, newMonth0, day));
+};
 class TransactionsController {
     constructor() {
+        // =========================================================
+        // GET /transactions
+        // Filtro por mês/ano em cima de Expense.date / Income.date
+        // (sempre data da COMPRA no caso de cartão)
+        // =========================================================
         this.getTransactions = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -24,103 +62,81 @@ class TransactionsController {
                 const user = await database_1.prisma.user.findUnique({
                     where: { id: userId },
                     include: {
-                        account: {
-                            include: {
-                                users: true,
-                            },
-                        },
+                        account: true,
                     },
                 });
-                if (!user || !user.accountId || !user.account) {
+                if (!user || !user.accountId) {
                     throw new HttpError_1.HttpError(400, "Usuário não possui conta financeira configurada.");
                 }
                 const accountId = user.accountId;
-                const partner = user.account.users.find((u) => u.id !== userId) || null;
-                const partnerId = partner?.id || null;
-                const { month: monthParam, year: yearParam, type: typeParam, category: categoryParam, responsible: responsibleParam, } = TransactionsSchema_1.GetTransactionsQuerySchema.parse(req.query);
-                const effectiveType = typeParam ?? "todas";
-                const now = new Date();
-                const currentYear = now.getUTCFullYear();
-                const currentMonth = now.getUTCMonth() + 1;
-                const month = monthParam ? Number(monthParam) : currentMonth;
-                const year = yearParam ? Number(yearParam) : currentYear;
-                const category = normalizeCategory(categoryParam);
-                const startDate = new Date(Date.UTC(year, month - 1, 1));
-                const endDate = new Date(Date.UTC(year, month, 1));
-                const expenseWhere = {
-                    accountId,
-                    date: {
-                        gte: startDate,
-                        lt: endDate,
-                    },
-                };
-                const incomeWhere = {
-                    accountId,
-                    date: {
-                        gte: startDate,
-                        lt: endDate,
-                    },
-                };
+                const parsed = TransactionsSchema_1.GetTransactionsQuerySchema.parse(req.query);
+                const { month, // number | undefined
+                year, // number | undefined
+                type, // "todas" | "income" | "expense" | undefined
+                category, } = parsed;
+                const hasMonthYear = typeof month === "number" && typeof year === "number";
+                const expenseWhere = { accountId };
+                const incomeWhere = { accountId };
                 if (category) {
                     expenseWhere.category = category;
                     incomeWhere.category = category;
                 }
-                if (responsibleParam === "voce") {
-                    expenseWhere.responsibleUserId = userId;
-                    incomeWhere.responsibleUserId = userId;
-                }
-                else if (responsibleParam === "parceiro" && partnerId) {
-                    expenseWhere.responsibleUserId = partnerId;
-                    incomeWhere.responsibleUserId = partnerId;
-                }
-                const includeExpense = {
-                    card: true,
-                };
-                const includeIncome = {};
-                const shouldFetchExpenses = effectiveType === "todas" || effectiveType === "expense";
-                const shouldFetchIncomes = effectiveType === "todas" || effectiveType === "income";
+                // type = undefined ou "todas" => busca os dois
+                const shouldFetchExpenses = !type || type === "expense" || type === "todas";
+                const shouldFetchIncomes = !type || type === "income" || type === "todas";
                 const [expenses, incomes] = await Promise.all([
                     shouldFetchExpenses
                         ? database_1.prisma.expense.findMany({
                             where: expenseWhere,
-                            include: includeExpense,
-                            orderBy: { date: "desc" },
+                            include: { card: true },
                         })
                         : Promise.resolve([]),
                     shouldFetchIncomes
                         ? database_1.prisma.income.findMany({
                             where: incomeWhere,
-                            include: includeIncome,
-                            orderBy: { date: "desc" },
                         })
                         : Promise.resolve([]),
                 ]);
-                const merged = [
-                    ...expenses.map((e) => ({ kind: "expense", data: e })),
-                    ...incomes.map((i) => ({ kind: "income", data: i })),
-                ];
-                merged.sort((a, b) => {
-                    const diffDate = b.data.date.getTime() - a.data.date.getTime();
-                    if (diffDate !== 0)
-                        return diffDate;
-                    const aCreated = a.data.createdAt;
-                    const bCreated = b.data.createdAt;
-                    if (aCreated && bCreated) {
-                        const diffCreated = bCreated.getTime() - aCreated.getTime();
-                        if (diffCreated !== 0)
-                            return diffCreated;
-                    }
-                    return 0;
+                const expenseDTOs = expenses.map((e) => this.mapExpenseToDTO(e, userId));
+                const incomeDTOs = incomes.map((i) => this.mapIncomeToDTO(i, userId));
+                let allDTOs = [...expenseDTOs, ...incomeDTOs];
+                // 🔹 Filtro de mês/ano em cima de t.date (data da compra)
+                if (hasMonthYear) {
+                    allDTOs = allDTOs.filter((t) => {
+                        if (!t.date)
+                            return false;
+                        const [yStr, mStr] = t.date.split("-");
+                        const y = Number(yStr);
+                        const m = Number(mStr);
+                        if (!y || !m)
+                            return false;
+                        if (y !== year)
+                            return false;
+                        if (m !== month)
+                            return false;
+                        return true;
+                    });
+                }
+                // 🔹 Ordenação: mais recente primeiro (data da compra)
+                allDTOs.sort((a, b) => {
+                    const dateA = new Date(a.date).getTime();
+                    const dateB = new Date(b.date).getTime();
+                    return dateB - dateA;
                 });
-                const transactions = merged.map((item) => item.kind === "expense"
-                    ? this.mapExpenseToDTO(item.data, userId)
-                    : this.mapIncomeToDTO(item.data, userId));
-                return res.json({ transactions });
+                return res.json({
+                    transactions: allDTOs,
+                });
             }
             catch (err) {
                 next(err);
             }
         };
+        // =========================================================
+        // POST /transactions/expenses
+        // Cria despesa. Para cartão parcelado:
+        // - value = valor da PARCELA
+        // - date = SEMPRE data da COMPRA para TODAS as parcelas
+        // =========================================================
         this.createExpense = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -143,9 +159,10 @@ class TransactionsController {
                 const partner = user.account.users.find((u) => u.id !== userId) || null;
                 const partnerId = partner?.id || null;
                 const parsed = TransactionsSchema_1.CreateExpenseSchema.parse(req.body);
-                const { value, category, description, date, paidBy, splitType, customSplit, paymentMethod, creditCardId, installments, currentInstallment, } = parsed;
+                const { value, category, description, date, // data da COMPRA
+                paidBy, splitType, customSplit, paymentMethod, creditCardId, installments, } = parsed;
                 const safeDescription = description?.trim() ?? "";
-                const parsedDate = parseDateStringToUTC(date);
+                const purchaseDate = parseDateStringToUTC(date); // data da compra
                 const paidByCode = paidBy === "parceiro" ? "partner" : "you";
                 let responsibleUserId = null;
                 if (paidByCode === "you") {
@@ -157,31 +174,14 @@ class TransactionsController {
                 else {
                     responsibleUserId = userId;
                 }
-                let youPay = null;
-                let partnerPays = null;
-                if (splitType === "50-50") {
-                    const half = Number((value / 2).toFixed(2));
-                    youPay = half;
-                    partnerPays = Number((value - half).toFixed(2));
-                }
-                else if (splitType === "proporcional") {
-                    const proportional = await this.calculateProportionalSplit(accountId, parsedDate, value);
-                    youPay = proportional.youPay;
-                    partnerPays = proportional.partnerPays;
-                }
-                else if (splitType === "customizada") {
-                    const userPercent = customSplit?.you ?? 50;
-                    const youVal = Number(((value * userPercent) / 100).toFixed(2));
-                    youPay = youVal;
-                    partnerPays = Number((value - youVal).toFixed(2));
-                }
                 const dbPaymentMethod = paymentMethod === "cartao" ? "card" : "cash";
                 let cardId = null;
+                let card = null;
                 if (dbPaymentMethod === "card") {
                     if (!creditCardId) {
                         throw new HttpError_1.HttpError(400, "Selecione um cartão para pagamento no crédito.");
                     }
-                    const card = await database_1.prisma.creditCard.findFirst({
+                    card = await database_1.prisma.creditCard.findFirst({
                         where: {
                             id: creditCardId,
                             accountId,
@@ -192,28 +192,55 @@ class TransactionsController {
                     }
                     cardId = card.id;
                 }
-                const totalInstallments = typeof installments === "number" && installments > 1
-                    ? installments
-                    : 1;
-                let initialInstallment = typeof currentInstallment === "number" && currentInstallment >= 1
-                    ? currentInstallment
-                    : 1;
-                if (initialInstallment > totalInstallments) {
-                    throw new HttpError_1.HttpError(400, "Parcela atual não pode ser maior que o número total de parcelas.");
+                const totalInstallments = typeof installments === "number" && installments > 1 ? installments : 1;
+                const isCardParcelado = dbPaymentMethod === "card" && totalInstallments > 1;
+                // -----------------------------
+                // Valor base por PARCELA
+                // -----------------------------
+                // Regras:
+                // - Se cartão parcelado: value (backend) = total da compra
+                //   => perInstallmentValue = total / N
+                // - Caso contrário: value é o valor da própria despesa (1x)
+                const totalValue = value;
+                const perInstallmentValue = isCardParcelado
+                    ? Number((totalValue / totalInstallments).toFixed(2))
+                    : totalValue;
+                // -----------------------------
+                // Split por parcela
+                // -----------------------------
+                let youPayPerInstallment = null;
+                let partnerPaysPerInstallment = null;
+                const baseForSplit = perInstallmentValue;
+                if (splitType === "50-50") {
+                    const half = Number((baseForSplit / 2).toFixed(2));
+                    youPayPerInstallment = half;
+                    partnerPaysPerInstallment = Number((baseForSplit - half).toFixed(2));
                 }
-                if (dbPaymentMethod === "card" && totalInstallments > 1) {
-                    const perInstallmentValue = Number((value / totalInstallments).toFixed(2));
-                    const perInstallmentYouPay = youPay != null
-                        ? Number((youPay / totalInstallments).toFixed(2))
-                        : null;
-                    const perInstallmentPartnerPays = partnerPays != null
-                        ? Number((partnerPays / totalInstallments).toFixed(2))
-                        : null;
-                    const created = await database_1.prisma.$transaction(async (tx) => {
+                else if (splitType === "proporcional") {
+                    // usa o mês da compra para calcular proporcional
+                    const proportional = await this.calculateProportionalSplit(accountId, purchaseDate, baseForSplit);
+                    youPayPerInstallment = proportional.youPay;
+                    partnerPaysPerInstallment = proportional.partnerPays;
+                }
+                else if (splitType === "customizada") {
+                    const userPercent = customSplit?.you ?? 50;
+                    const youVal = Number(((baseForSplit * userPercent) / 100).toFixed(2));
+                    youPayPerInstallment = youVal;
+                    partnerPaysPerInstallment = Number((baseForSplit - youVal).toFixed(2));
+                }
+                // -----------------------------
+                // Caso: CARTÃO + PARCELADO
+                // -> cria N parcelas, uma por fatura
+                // -----------------------------
+                if (isCardParcelado && card) {
+                    const installmentGroupId = (0, crypto_1.randomUUID)();
+                    const firstInvoiceDate = getFirstInvoiceDate(purchaseDate, card.closingDay ?? null, card.dueDay ?? null);
+                    const createdExpenses = await database_1.prisma.$transaction(async (tx) => {
                         const results = [];
-                        for (let installmentNumber = initialInstallment; installmentNumber <= totalInstallments; installmentNumber++) {
-                            const installmentDate = new Date(parsedDate);
-                            installmentDate.setUTCMonth(installmentDate.getUTCMonth() + (installmentNumber - 1));
+                        for (let k = 1; k <= totalInstallments; k++) {
+                            const installmentDate = k === 1
+                                ? firstInvoiceDate
+                                : addMonthsKeepingDay(firstInvoiceDate, k - 1);
                             const exp = await tx.expense.create({
                                 data: {
                                     accountId,
@@ -224,17 +251,16 @@ class TransactionsController {
                                     value: perInstallmentValue,
                                     date: installmentDate,
                                     paidBy: paidByCode,
-                                    youPay: perInstallmentYouPay,
-                                    partnerPays: perInstallmentPartnerPays,
+                                    youPay: youPayPerInstallment,
+                                    partnerPays: partnerPaysPerInstallment,
                                     paymentMethod: dbPaymentMethod,
                                     cardId,
                                     installments: totalInstallments,
-                                    currentInstallment: installmentNumber,
-                                    installment: `${installmentNumber}/${totalInstallments}`,
+                                    currentInstallment: k,
+                                    installment: `${k}/${totalInstallments}`,
+                                    installmentGroupId,
                                 },
-                                include: {
-                                    card: true,
-                                },
+                                include: { card: true },
                             });
                             results.push(exp);
                         }
@@ -242,9 +268,15 @@ class TransactionsController {
                     });
                     return res.status(201).json({
                         message: "Despesa parcelada criada com sucesso.",
-                        transactions: created.map((e) => this.mapExpenseToDTO(e, userId)),
+                        transactions: createdExpenses.map((e) => this.mapExpenseToDTO(e, userId)),
                     });
                 }
+                // -----------------------------
+                // Caso: NÃO é cartão parcelado
+                // - vista / débito / pix
+                // - cartão 1x
+                // -> cria UMA despesa
+                // -----------------------------
                 const expense = await database_1.prisma.expense.create({
                     data: {
                         accountId,
@@ -252,20 +284,20 @@ class TransactionsController {
                         responsibleUserId,
                         description: safeDescription,
                         category,
-                        value,
-                        date: parsedDate,
+                        value: perInstallmentValue,
+                        // aqui mantemos date = data da compra (ou data escolhida para cobrança única)
+                        date: purchaseDate,
                         paidBy: paidByCode,
-                        youPay,
-                        partnerPays,
+                        youPay: youPayPerInstallment,
+                        partnerPays: partnerPaysPerInstallment,
                         paymentMethod: dbPaymentMethod,
                         cardId,
-                        installments: totalInstallments,
+                        installments: totalInstallments, // normalmente 1
                         currentInstallment: 1,
                         installment: totalInstallments > 1 ? `1/${totalInstallments}` : null,
+                        installmentGroupId: null,
                     },
-                    include: {
-                        card: true,
-                    },
+                    include: { card: true },
                 });
                 return res.status(201).json({
                     message: "Despesa criada com sucesso.",
@@ -276,6 +308,13 @@ class TransactionsController {
                 next(err);
             }
         };
+        // =========================================================
+        // PUT /transactions/expenses/:id
+        // Mantém a mesma filosofia:
+        // - date recebida é a data da parcela editada, MAS
+        //   para simplificar, mantemos a mesma data para
+        //   todas as parcelas (compra).
+        // =========================================================
         this.updateExpense = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -303,18 +342,18 @@ class TransactionsController {
                         id,
                         accountId,
                     },
-                    include: {
-                        card: true,
-                    },
+                    include: { card: true },
                 });
                 if (!existing) {
                     return res.status(404).json({ message: "Despesa não encontrada." });
                 }
                 const parsed = TransactionsSchema_1.UpdateExpenseSchema.parse(req.body);
-                const { value, category, description, date, paidBy, splitType, customSplit, paymentMethod, creditCardId, installments, currentInstallment, } = parsed;
+                const { value, category, description, date, paidBy, splitType, customSplit, paymentMethod, creditCardId, installments, } = parsed;
                 const scope = parsed.scope === "all" ? "all" : "single";
                 const safeDescription = description?.trim() ?? "";
-                const parsedDate = parseDateStringToUTC(date);
+                const newDateStr = date; // string YYYY-MM-DD que veio no body
+                const newDate = parseDateStringToUTC(newDateStr);
+                const existingDateStr = existing.date.toISOString().split("T")[0];
                 const paidByCode = paidBy === "parceiro" ? "partner" : "you";
                 let responsibleUserId = null;
                 if (paidByCode === "you") {
@@ -326,32 +365,14 @@ class TransactionsController {
                 else {
                     responsibleUserId = userId;
                 }
-                // cálculo de divisão (por parcela)
-                let youPay = null;
-                let partnerPays = null;
-                if (splitType === "50-50") {
-                    const half = Number((value / 2).toFixed(2));
-                    youPay = half;
-                    partnerPays = Number((value - half).toFixed(2));
-                }
-                else if (splitType === "proporcional") {
-                    const proportional = await this.calculateProportionalSplit(accountId, parsedDate, value);
-                    youPay = proportional.youPay;
-                    partnerPays = proportional.partnerPays;
-                }
-                else if (splitType === "customizada") {
-                    const userPercent = customSplit?.you ?? 50;
-                    const youVal = Number(((value * userPercent) / 100).toFixed(2));
-                    youPay = youVal;
-                    partnerPays = Number((value - youVal).toFixed(2));
-                }
                 const dbPaymentMethod = paymentMethod === "cartao" ? "card" : "cash";
                 let cardId = null;
+                let card = null;
                 if (dbPaymentMethod === "card") {
                     if (!creditCardId) {
                         throw new HttpError_1.HttpError(400, "Selecione um cartão para pagamento no crédito.");
                     }
-                    const card = await database_1.prisma.creditCard.findFirst({
+                    card = await database_1.prisma.creditCard.findFirst({
                         where: {
                             id: creditCardId,
                             accountId,
@@ -363,135 +384,284 @@ class TransactionsController {
                     cardId = card.id;
                 }
                 const originalInstallments = existing.installments ?? 1;
+                const wasCardParcelled = existing.paymentMethod === "card" && originalInstallments > 1;
                 const totalInstallments = typeof installments === "number" && installments > 0
                     ? installments
                     : originalInstallments;
-                const currentInst = typeof currentInstallment === "number" && currentInstallment >= 1
-                    ? currentInstallment
-                    : existing.currentInstallment ?? 1;
-                if (currentInst > totalInstallments) {
-                    throw new HttpError_1.HttpError(400, "Parcela atual não pode ser maior que o número total de parcelas.");
+                const willBeCardParcelled = dbPaymentMethod === "card" && totalInstallments > 1;
+                const paymentMethodChanged = existing.paymentMethod !== dbPaymentMethod;
+                const cardChanged = (existing.cardId ?? null) !== (cardId ?? null);
+                const dateChangedAll = scope === "all" && existingDateStr !== newDateStr;
+                // --------------------------------------------------
+                // Split por PARCELA (value é valor da parcela)
+                // --------------------------------------------------
+                const baseForSplit = value;
+                let youPayPerInstallment = null;
+                let partnerPaysPerInstallment = null;
+                if (splitType === "50-50") {
+                    const half = Number((baseForSplit / 2).toFixed(2));
+                    youPayPerInstallment = half;
+                    partnerPaysPerInstallment = Number((baseForSplit - half).toFixed(2));
                 }
-                const isParcelledExisting = existing.paymentMethod === "card" && originalInstallments > 1;
-                /**
-                 * 🔥 CASO 1: scope === "all" e despesa parcelada no cartão
-                 * Atualiza TODAS as parcelas desta compra.
-                 */
-                if (scope === "all" && isParcelledExisting) {
-                    // Não deixo mudar o número de parcelas aqui (simplifica MUITO).
-                    if (typeof installments === "number" &&
-                        installments !== originalInstallments) {
-                        throw new HttpError_1.HttpError(400, "Não é possível alterar o número total de parcelas de uma compra já parcelada. " +
-                            "Edite apenas os dados/valor ou crie uma nova despesa.");
-                    }
-                    // Busca TODAS as parcelas que, muito provavelmente, são da mesma compra
-                    const siblings = await database_1.prisma.expense.findMany({
-                        where: {
+                else if (splitType === "proporcional") {
+                    const proportional = await this.calculateProportionalSplit(accountId, newDate, baseForSplit);
+                    youPayPerInstallment = proportional.youPay;
+                    partnerPaysPerInstallment = proportional.partnerPays;
+                }
+                else if (splitType === "customizada") {
+                    const userPercent = customSplit?.you ?? 50;
+                    const youVal = Number(((baseForSplit * userPercent) / 100).toFixed(2));
+                    youPayPerInstallment = youVal;
+                    partnerPaysPerInstallment = Number((baseForSplit - youVal).toFixed(2));
+                }
+                // =========================================================
+                // CASO: scope = "all" E será cartão parcelado
+                // =========================================================
+                if (scope === "all" && willBeCardParcelled) {
+                    // Descobre o grupo de parcelas
+                    const siblingsWhere = existing.installmentGroupId
+                        ? {
+                            accountId,
+                            installmentGroupId: existing.installmentGroupId,
+                        }
+                        : {
                             accountId,
                             paymentMethod: "card",
                             cardId: existing.cardId,
-                            installments: originalInstallments,
                             description: existing.description,
                             category: existing.category,
-                        },
-                        orderBy: {
-                            date: "asc",
-                        },
+                        };
+                    let siblings = await database_1.prisma.expense.findMany({
+                        where: siblingsWhere,
+                        orderBy: { date: "asc" }, // ordenar por data (1ª fatura -> última fatura)
                     });
                     if (siblings.length === 0) {
-                        // fallback: se por algum motivo não achar, faz update normal na atual
-                        const updated = await database_1.prisma.expense.update({
-                            where: { id: existing.id },
-                            data: {
-                                description: safeDescription,
-                                category,
-                                value,
-                                date: parsedDate,
-                                accountId,
-                                createdById: existing.createdById,
-                                responsibleUserId,
-                                paidBy: paidByCode,
-                                youPay,
-                                partnerPays,
-                                paymentMethod: dbPaymentMethod,
-                                cardId,
-                                installments: totalInstallments,
-                                currentInstallment: currentInst,
-                                installment: totalInstallments > 1
-                                    ? `${currentInst}/${totalInstallments}`
-                                    : null,
-                            },
-                            include: {
-                                card: true,
-                            },
+                        siblings = [existing];
+                    }
+                    const originalTotal = siblings.length;
+                    const groupId = existing.installmentGroupId && existing.installmentGroupId.length > 0
+                        ? existing.installmentGroupId
+                        : (0, crypto_1.randomUUID)();
+                    // --------------------------------------------------
+                    // REBUILD TOTAL:
+                    // - data mudou (na parcela editada)
+                    // - ou não era parcelado e virou parcelado
+                    // - ou pm/cartão mudaram
+                    // --------------------------------------------------
+                    if (dateChangedAll ||
+                        !wasCardParcelled ||
+                        paymentMethodChanged ||
+                        cardChanged) {
+                        const updatedCurrent = await database_1.prisma.$transaction(async (tx) => {
+                            // apaga todas as parcelas do grupo antigo
+                            await tx.expense.deleteMany({
+                                where: siblingsWhere,
+                            });
+                            // nova primeira fatura baseada na NOVA data
+                            const firstInvoiceDate = getFirstInvoiceDate(newDate, card?.closingDay ?? null, card?.dueDay ?? null);
+                            for (let k = 1; k <= totalInstallments; k++) {
+                                const installmentDate = k === 1
+                                    ? firstInvoiceDate
+                                    : addMonthsKeepingDay(firstInvoiceDate, k - 1);
+                                await tx.expense.create({
+                                    data: {
+                                        accountId,
+                                        createdById: existing.createdById,
+                                        responsibleUserId,
+                                        description: safeDescription,
+                                        category,
+                                        value: baseForSplit,
+                                        date: installmentDate,
+                                        paidBy: paidByCode,
+                                        youPay: youPayPerInstallment,
+                                        partnerPays: partnerPaysPerInstallment,
+                                        paymentMethod: dbPaymentMethod,
+                                        cardId,
+                                        installments: totalInstallments,
+                                        currentInstallment: k,
+                                        installment: `${k}/${totalInstallments}`,
+                                        installmentGroupId: groupId,
+                                    },
+                                });
+                            }
+                            const current = await tx.expense.findFirst({
+                                where: {
+                                    accountId,
+                                    installmentGroupId: groupId,
+                                    currentInstallment: existing.currentInstallment ?? 1,
+                                },
+                                include: { card: true },
+                            });
+                            return current;
                         });
                         return res.json({
-                            message: "Despesa atualizada, porém não foi possível identificar todas as parcelas.",
-                            transaction: this.mapExpenseToDTO(updated, userId),
+                            message: "Todas as parcelas foram recriadas com a nova configuração.",
+                            transaction: updatedCurrent
+                                ? this.mapExpenseToDTO(updatedCurrent, userId)
+                                : undefined,
                         });
                     }
-                    // Atualiza todas as parcelas encontradas
-                    await database_1.prisma.$transaction(siblings.map((sibling) => database_1.prisma.expense.update({
-                        where: { id: sibling.id },
-                        data: {
-                            description: safeDescription,
-                            category,
-                            // aqui assumimos que 'value' é o valor da PARCELA (como no modal)
-                            value,
-                            // mantemos a data original de cada parcela (não mexemos no ciclo da fatura)
-                            date: sibling.date,
-                            accountId,
-                            createdById: sibling.createdById,
-                            responsibleUserId,
-                            paidBy: paidByCode,
-                            youPay,
-                            partnerPays,
-                            paymentMethod: dbPaymentMethod,
-                            cardId,
-                            installments: originalInstallments,
-                            currentInstallment: sibling.currentInstallment,
-                            installment: originalInstallments > 1 && sibling.currentInstallment
-                                ? `${sibling.currentInstallment}/${originalInstallments}`
-                                : null,
-                        },
-                    })));
-                    const updatedCurrent = await database_1.prisma.expense.findUnique({
-                        where: { id: existing.id },
-                        include: { card: true },
+                    // --------------------------------------------------
+                    // AJUSTE SEM REBUILD:
+                    // - continua cartão parcelado
+                    // - mesma data-base (da parcela editada)
+                    // - mesmo cartão / paymentMethod
+                    //
+                    // Regras:
+                    //   * Atualiza valor/split de todas
+                    //   * Se novo total < antigo -> remove cauda
+                    //   * Se novo total > antigo -> cria cauda baseada na
+                    //     data da ÚLTIMA fatura atual
+                    //   * Sempre renumera installments/currentInstallment/instalment
+                    // --------------------------------------------------
+                    const updatedCurrent = await database_1.prisma.$transaction(async (tx) => {
+                        // re-carrega com lock lógico
+                        const siblingsSorted = await tx.expense.findMany({
+                            where: siblingsWhere,
+                            orderBy: { date: "asc" },
+                        });
+                        const existingCount = siblingsSorted.length;
+                        // Atualiza as parcelas existentes até o novo total
+                        const limit = Math.min(existingCount, totalInstallments);
+                        for (let i = 0; i < limit; i++) {
+                            const s = siblingsSorted[i];
+                            const k = i + 1; // 1..limit
+                            await tx.expense.update({
+                                where: { id: s.id },
+                                data: {
+                                    description: safeDescription,
+                                    category,
+                                    value: baseForSplit,
+                                    date: s.date, // mantém data original dessa fatura
+                                    accountId,
+                                    createdById: s.createdById,
+                                    responsibleUserId,
+                                    paidBy: paidByCode,
+                                    youPay: youPayPerInstallment,
+                                    partnerPays: partnerPaysPerInstallment,
+                                    paymentMethod: dbPaymentMethod,
+                                    cardId,
+                                    installments: totalInstallments,
+                                    currentInstallment: k,
+                                    installment: `${k}/${totalInstallments}`,
+                                    installmentGroupId: groupId,
+                                },
+                            });
+                        }
+                        // Se novo total < existente -> deleta últimas parcelas
+                        if (totalInstallments < existingCount) {
+                            const toDeleteIds = siblingsSorted
+                                .slice(totalInstallments)
+                                .map((s) => s.id);
+                            if (toDeleteIds.length > 0) {
+                                await tx.expense.deleteMany({
+                                    where: {
+                                        id: { in: toDeleteIds },
+                                    },
+                                });
+                            }
+                        }
+                        // Se novo total > existente -> cria cauda baseada na ÚLTIMA data
+                        if (totalInstallments > existingCount) {
+                            const last = siblingsSorted[existingCount - 1];
+                            const lastDate = last.date;
+                            for (let k = existingCount + 1; k <= totalInstallments; k++) {
+                                const monthsToAdd = k - existingCount;
+                                const installmentDate = addMonthsKeepingDay(lastDate, monthsToAdd);
+                                await tx.expense.create({
+                                    data: {
+                                        accountId,
+                                        createdById: existing.createdById,
+                                        responsibleUserId,
+                                        description: safeDescription,
+                                        category,
+                                        value: baseForSplit,
+                                        date: installmentDate,
+                                        paidBy: paidByCode,
+                                        youPay: youPayPerInstallment,
+                                        partnerPays: partnerPaysPerInstallment,
+                                        paymentMethod: dbPaymentMethod,
+                                        cardId,
+                                        installments: totalInstallments,
+                                        currentInstallment: k,
+                                        installment: `${k}/${totalInstallments}`,
+                                        installmentGroupId: groupId,
+                                    },
+                                });
+                            }
+                        }
+                        const current = await tx.expense.findUnique({
+                            where: { id: existing.id },
+                            include: { card: true },
+                        });
+                        return current;
                     });
                     return res.json({
-                        message: "Todas as parcelas dessa compra foram atualizadas.",
+                        message: totalInstallments > originalTotal
+                            ? "Todas as parcelas foram atualizadas e novas parcelas foram adicionadas com base na última fatura."
+                            : totalInstallments < originalTotal
+                                ? "Todas as parcelas foram atualizadas e parcelas extras foram removidas."
+                                : "Todas as parcelas foram atualizadas.",
                         transaction: updatedCurrent
                             ? this.mapExpenseToDTO(updatedCurrent, userId)
                             : undefined,
                     });
                 }
-                /**
-                 * CASO 2: scope === "single" ou não é despesa parcelada no cartão
-                 * Comportamento original: atualiza só este registro.
-                 */
+                // =========================================================
+                // CASO: scope = "all" mas deixou de ser cartão parcelado
+                // → apaga as outras parcelas do grupo e mantém só esta
+                // =========================================================
+                if (scope === "all" && wasCardParcelled && !willBeCardParcelled) {
+                    const siblingsWhere = existing.installmentGroupId
+                        ? {
+                            accountId,
+                            installmentGroupId: existing.installmentGroupId,
+                            id: { not: existing.id },
+                        }
+                        : {
+                            accountId,
+                            paymentMethod: "card",
+                            cardId: existing.cardId,
+                            description: existing.description,
+                            category: existing.category,
+                            id: { not: existing.id },
+                        };
+                    await database_1.prisma.expense.deleteMany({
+                        where: siblingsWhere,
+                    });
+                }
+                // =========================================================
+                // CASO GERAL:
+                //  - scope = "single"
+                //  - ou não é cartão parcelado
+                // =========================================================
                 const updated = await database_1.prisma.expense.update({
                     where: { id: existing.id },
                     data: {
                         description: safeDescription,
                         category,
-                        value,
-                        date: parsedDate,
+                        value: baseForSplit,
+                        date: newDate,
                         accountId,
                         createdById: existing.createdById,
                         responsibleUserId,
                         paidBy: paidByCode,
-                        youPay,
-                        partnerPays,
+                        youPay: youPayPerInstallment,
+                        partnerPays: partnerPaysPerInstallment,
                         paymentMethod: dbPaymentMethod,
                         cardId,
-                        installments: totalInstallments,
-                        currentInstallment: currentInst,
-                        installment: totalInstallments > 1 ? `${currentInst}/${totalInstallments}` : null,
+                        installments: willBeCardParcelled ? totalInstallments : 1,
+                        currentInstallment: willBeCardParcelled
+                            ? existing.currentInstallment ?? 1
+                            : 1,
+                        installment: willBeCardParcelled
+                            ? `${existing.currentInstallment ?? 1}/${totalInstallments}`
+                            : null,
+                        installmentGroupId: willBeCardParcelled
+                            ? existing.installmentGroupId ?? (0, crypto_1.randomUUID)()
+                            : null,
                     },
-                    include: {
-                        card: true,
-                    },
+                    include: { card: true },
                 });
                 return res.json({
                     message: "Despesa atualizada com sucesso.",
@@ -502,6 +672,9 @@ class TransactionsController {
                 next(err);
             }
         };
+        // =========================================================
+        // DELETE /transactions/expenses/:id
+        // =========================================================
         this.deleteExpense = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -514,14 +687,38 @@ class TransactionsController {
                 if (!user || !user.accountId) {
                     throw new HttpError_1.HttpError(400, "Usuário não possui conta financeira configurada.");
                 }
+                const accountId = user.accountId;
                 const existing = await database_1.prisma.expense.findFirst({
                     where: {
                         id,
-                        accountId: user.accountId,
+                        accountId,
                     },
                 });
                 if (!existing) {
                     return res.status(404).json({ message: "Despesa não encontrada." });
+                }
+                const isParcelledExisting = existing.paymentMethod === "card" && (existing.installments ?? 1) > 1;
+                if (isParcelledExisting && existing.installmentGroupId) {
+                    await database_1.prisma.expense.deleteMany({
+                        where: {
+                            accountId,
+                            installmentGroupId: existing.installmentGroupId,
+                        },
+                    });
+                    return res.status(204).send();
+                }
+                if (isParcelledExisting) {
+                    await database_1.prisma.expense.deleteMany({
+                        where: {
+                            accountId,
+                            paymentMethod: "card",
+                            cardId: existing.cardId,
+                            installments: existing.installments,
+                            description: existing.description,
+                            category: existing.category,
+                        },
+                    });
+                    return res.status(204).send();
                 }
                 await database_1.prisma.expense.delete({
                     where: { id: existing.id },
@@ -532,6 +729,9 @@ class TransactionsController {
                 next(err);
             }
         };
+        // =========================================================
+        // INCOME (create / update / delete) – mantido com ajustes mínimos
+        // =========================================================
         this.createIncome = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -730,10 +930,14 @@ class TransactionsController {
             }
         };
     }
+    // =========================================================
+    // MAPPERS
+    // =========================================================
     mapExpenseToDTO(expense, currentUserId) {
         const dateStr = expense.date.toISOString().split("T")[0];
         let responsibleLabel = "Você";
-        if (expense.responsibleUserId && expense.responsibleUserId !== currentUserId) {
+        if (expense.responsibleUserId &&
+            expense.responsibleUserId !== currentUserId) {
             responsibleLabel = "Parceiro";
         }
         let paidByLabel = "Você";
@@ -747,15 +951,14 @@ class TransactionsController {
             partnerPays = Number((expense.value - half).toFixed(2));
         }
         const paymentMethod = expense.paymentMethod === "card" ? "card" : "cash";
-        const installments = typeof expense.installments === "number"
-            ? expense.installments
-            : null;
+        const installments = typeof expense.installments === "number" ? expense.installments : null;
         const currentInstallment = typeof expense.currentInstallment === "number"
             ? expense.currentInstallment
             : null;
-        const installmentStr = expense.installment ?? (installments && currentInstallment
-            ? `${currentInstallment}/${installments}`
-            : null);
+        const installmentStr = expense.installment ??
+            (installments && currentInstallment
+                ? `${currentInstallment}/${installments}`
+                : null);
         return {
             id: expense.id,
             type: "expense",
@@ -785,7 +988,8 @@ class TransactionsController {
         if (income.receivedBy === "shared")
             receivedBy = "Compartilhado";
         let responsible = "Você";
-        if (income.responsibleUserId && income.responsibleUserId !== currentUserId) {
+        if (income.responsibleUserId &&
+            income.responsibleUserId !== currentUserId) {
             responsible = "Parceiro";
         }
         return {
@@ -800,6 +1004,9 @@ class TransactionsController {
             receivedBy,
         };
     }
+    // =========================================================
+    // SPLIT PROPORCIONAL
+    // =========================================================
     async calculateProportionalSplit(accountId, expenseDate, amount) {
         const year = expenseDate.getUTCFullYear();
         const month = expenseDate.getUTCMonth();

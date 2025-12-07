@@ -7,7 +7,6 @@ const CreditCardsSchema_1 = require("./schemas/CreditCardsSchema");
 class CreditCardsController {
     constructor() {
         // GET /credit-cards
-        // Lista cartões da conta do usuário + total usado na FATURA do mês/ano (considerando closingDay).
         this.getCreditCards = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -24,7 +23,7 @@ class CreditCardsController {
                 const now = new Date();
                 const month = monthParam ? Number(monthParam) : now.getMonth() + 1;
                 const year = yearParam ? Number(yearParam) : now.getFullYear();
-                // 👉 busca TODAS as despesas de cartão, depois filtra por fatura (billing month/year)
+                const { startOfMonth, endOfMonth } = this.getMonthRange(year, month);
                 const cards = await database_1.prisma.creditCard.findMany({
                     where: {
                         accountId,
@@ -32,23 +31,16 @@ class CreditCardsController {
                     include: {
                         expenses: {
                             where: {
-                                paymentMethod: "card", // 👈 bate com TransactionsController/schema
+                                paymentMethod: "card",
+                                date: {
+                                    gte: startOfMonth,
+                                    lt: endOfMonth,
+                                },
                             },
                         },
                     },
                 });
-                const cardsDTO = cards.map((card) => {
-                    // despesas que pertencem à FATURA (month/year) considerando closingDay
-                    const expensesOfInvoice = card.expenses.filter((exp) => {
-                        const { year: billYear, month: billMonth } = this.getBillingYearMonth(exp.date, card.closingDay);
-                        return billYear === year && billMonth === month;
-                    });
-                    const cardForDTO = {
-                        ...card,
-                        expenses: expensesOfInvoice,
-                    };
-                    return this.mapCardToDTO(cardForDTO, user.id);
-                });
+                const cardsDTO = cards.map((card) => this.mapCardToDTO(card, user.id));
                 return res.json({ cards: cardsDTO });
             }
             catch (err) {
@@ -56,7 +48,6 @@ class CreditCardsController {
             }
         };
         // GET /credit-cards/:id
-        // Detalhe do cartão + despesas desse cartão na FATURA do mês/ano (considerando closingDay).
         this.getCreditCardDetails = async (req, res, next) => {
             try {
                 const userId = req.userId;
@@ -74,7 +65,7 @@ class CreditCardsController {
                 const now = new Date();
                 const month = monthParam ? Number(monthParam) : now.getMonth() + 1;
                 const year = yearParam ? Number(yearParam) : now.getFullYear();
-                // 👉 pega TODAS as despesas de cartão e depois filtra pela fatura
+                const { startOfMonth, endOfMonth } = this.getMonthRange(year, month);
                 const card = await database_1.prisma.creditCard.findFirst({
                     where: {
                         id,
@@ -83,7 +74,11 @@ class CreditCardsController {
                     include: {
                         expenses: {
                             where: {
-                                paymentMethod: "card", // 👈 aqui também
+                                paymentMethod: "card",
+                                date: {
+                                    gte: startOfMonth,
+                                    lt: endOfMonth,
+                                },
                             },
                         },
                     },
@@ -91,22 +86,16 @@ class CreditCardsController {
                 if (!card) {
                     throw new HttpError_1.HttpError(404, "Cartão não encontrado.");
                 }
-                // despesas dessa fatura (month/year) considerando closingDay
-                const expensesOfInvoice = card.expenses.filter((expense) => {
-                    const { year: billYear, month: billMonth } = this.getBillingYearMonth(expense.date, card.closingDay);
-                    return billYear === year && billMonth === month;
-                });
-                // 2) Descobre os grupos de parcelas PRESENTES nesta fatura
+                const expensesOfInvoice = card.expenses;
                 const groupIds = Array.from(new Set(expensesOfInvoice
                     .map((e) => e.installmentGroupId)
                     .filter((v) => !!v)));
-                // 3) Se houver grupos, busca TODAS as parcelas desses grupos (todos os meses)
                 const totalsByGroup = new Map();
                 if (groupIds.length > 0) {
                     const groupExpenses = await database_1.prisma.expense.findMany({
                         where: {
                             accountId,
-                            cardId: card.id, // 👈 schema usa cardId, não creditCardId
+                            cardId: card.id,
                             installmentGroupId: { in: groupIds },
                         },
                     });
@@ -114,12 +103,10 @@ class CreditCardsController {
                         if (!e.installmentGroupId)
                             continue;
                         const prev = totalsByGroup.get(e.installmentGroupId) ?? 0;
-                        totalsByGroup.set(e.installmentGroupId, prev + (e.value ?? 0)); // 👈 value, não amount
+                        totalsByGroup.set(e.installmentGroupId, prev + (e.value ?? 0));
                     }
                 }
-                // 4) DTO do cartão (used = só fatura filtrada)
-                const cardDTO = this.mapCardToDTO({ ...card, expenses: expensesOfInvoice }, user.id);
-                // 5) Mapeia as despesas da FATURA com total REAL da compra
+                const cardDTO = this.mapCardToDTO(card, user.id);
                 const expensesDTO = expensesOfInvoice
                     .sort((a, b) => a.date.getTime() - b.date.getTime())
                     .map((expense) => {
@@ -141,23 +128,21 @@ class CreditCardsController {
                             const totalInstallments = expense.installments && expense.installments > 0
                                 ? expense.installments
                                 : 1;
-                            totalValue = Number((expense.value * totalInstallments).toFixed(2) // 👈 value
-                            );
+                            totalValue = Number((expense.value * totalInstallments).toFixed(2));
                         }
                     }
                     else {
                         const totalInstallments = expense.installments && expense.installments > 0
                             ? expense.installments
                             : 1;
-                        totalValue = Number((expense.value * totalInstallments).toFixed(2) // 👈 value
-                        );
+                        totalValue = Number((expense.value * totalInstallments).toFixed(2));
                     }
                     return {
                         id: expense.id,
                         description: expense.description,
                         category: expense.category,
-                        value: expense.value, // 👈 valor da PARCELA (value)
-                        date: dateStr, // data REAL da compra
+                        value: expense.value,
+                        date: dateStr,
                         installment,
                         installmentGroupId: expense.installmentGroupId ?? null,
                         totalValue,
@@ -192,7 +177,7 @@ class CreditCardsController {
                         accountId,
                         userId: userIdForCard,
                         name: parsed.name.trim(),
-                        institution: parsed.institution, // já validado pelo Zod
+                        institution: parsed.institution,
                         lastDigits: parsed.lastDigits.trim(),
                         limit: parsed.limit,
                         dueDay: parsed.dueDay,
@@ -202,7 +187,7 @@ class CreditCardsController {
                     include: {
                         expenses: {
                             where: {
-                                paymentMethod: "card", // 👈 ajustado
+                                paymentMethod: "card",
                             },
                         },
                     },
@@ -274,7 +259,7 @@ class CreditCardsController {
                     include: {
                         expenses: {
                             where: {
-                                paymentMethod: "card", // 👈 ajustado
+                                paymentMethod: "card",
                             },
                         },
                     },
@@ -313,7 +298,7 @@ class CreditCardsController {
                     throw new HttpError_1.HttpError(404, "Cartão não encontrado.");
                 }
                 const hasExpenses = await database_1.prisma.expense.count({
-                    where: { cardId: existing.id }, // 👈 cardId, não creditCardId
+                    where: { cardId: existing.id },
                 });
                 if (hasExpenses > 0) {
                     throw new HttpError_1.HttpError(400, "Não é possível excluir um cartão com despesas vinculadas.");
@@ -328,12 +313,10 @@ class CreditCardsController {
             }
         };
     }
-    // ---------- HELPERS ----------
     async resolveCardOwner(accountId, currentUserId, ownerInput) {
         if (ownerInput === "voce") {
             return { ownerDb: "user", userIdForCard: currentUserId };
         }
-        // "parceiro"
         const partner = await database_1.prisma.user.findFirst({
             where: {
                 accountId,
@@ -348,8 +331,7 @@ class CreditCardsController {
     }
     mapCardToDTO(card, currentUserId) {
         const used = Array.isArray(card.expenses)
-            ? card.expenses.reduce((sum, exp) => sum + (exp.value ?? 0), // 👈 value, não amount
-            0)
+            ? card.expenses.reduce((sum, exp) => sum + (exp.value ?? 0), 0)
             : 0;
         const isCurrentUserOwner = card.userId === currentUserId;
         const ownerLabel = isCurrentUserOwner ? "Você" : "Parceiro";
@@ -367,9 +349,14 @@ class CreditCardsController {
             isCurrentUserOwner,
         };
     }
+    getMonthRange(year, month) {
+        const startOfMonth = new Date(year, month - 1, 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(year, month, 1, 0, 0, 0, 0);
+        return { startOfMonth, endOfMonth };
+    }
     getBillingYearMonth(date, closingDay) {
         let year = date.getUTCFullYear();
-        let month = date.getUTCMonth() + 1; // 1..12
+        let month = date.getUTCMonth() + 1;
         const day = date.getUTCDate();
         if (typeof closingDay === "number" &&
             closingDay >= 1 &&
